@@ -1,8 +1,8 @@
 # agent-scratchpad
 
-Keyed working memory for LLM agents — set, append, increment, with optional JSONL logging.
+A keyed in-memory notepad for LLM agent runs.
 
-Zero dependencies. Python 3.10+. MIT.
+Store, retrieve, snapshot, and restore named pieces of information across turns — without leaking mutable state.
 
 ## Install
 
@@ -13,61 +13,57 @@ pip install agent-scratchpad
 ## Usage
 
 ```python
-from agent_scratchpad import Scratchpad
+from agent_scratchpad import AgentScratchpad
 
-pad = Scratchpad()
-pad.set("topic", "quantum computing")
-pad.append("papers", "Shor 1994")
-pad.append("papers", "Grover 1996")
-pad.increment("search_count")
+pad = AgentScratchpad()
+pad.set("user_goal", "Write a poem about the sea")
+pad.set("draft", "Waves crash against the shore...")
 
-print(pad.to_text())
-# topic: quantum computing
-# papers:
-#   - Shor 1994
-#   - Grover 1996
-# search_count: 1
+print(pad.get("user_goal"))     # "Write a poem about the sea"
+print(pad.count)                # 2
+print(pad.keys())               # ["draft", "user_goal"]
+
+snap = pad.snapshot()           # plain dict, deep copy
+pad.delete("draft")
+pad.clear()
+pad.restore(snap)               # brings everything back
 ```
 
-## Inject into system prompt
+## API
 
-```python
-context = pad.to_text(title="Agent working memory")
-messages = [
-    {"role": "system", "content": f"You are helpful.\n\n{context}"},
-    ...
-]
-```
+### `AgentScratchpad()`
 
-## Persistence
+No constructor arguments.
 
-```python
-# JSONL log — every operation appended
-pad = Scratchpad("logs/scratchpad.jsonl")
-pad.set("key", "value")  # appended to log
+### Writes (all chainable)
 
-# Save/load full snapshot
-pad.save("state.json")
-pad2 = Scratchpad.load("state.json")
-```
+| Method | Description |
+|--------|-------------|
+| `set(key, value)` | Store a value (deep copy). |
+| `update(data)` | Merge a dict into the scratchpad (deep copy). |
+| `delete(key)` | Remove a key. No-op if missing. |
+| `clear()` | Remove all entries. |
+| `restore(data)` | Replace the entire scratchpad with a dict (deep copy). |
 
-## All operations
+### Reads
 
-```python
-pad.set("key", value)          # set scalar
-pad.get("key", default=None)   # get (deep copy)
-pad.delete("key")              # remove
-pad.has("key")                 # bool
-pad.append("list_key", item)   # append to list
-pad.prepend("list_key", item)  # prepend to list
-pad.extend_list("list", items) # extend list
-pad.increment("counter", by=1) # add to number
-pad.decrement("counter", by=1) # subtract
-pad.update({"a": 1, "b": 2})  # set multiple
-pad.clear()                    # remove all
-pad.keys()                     # sorted key list
-pad.snapshot()                 # deep copy of data
-```
+| Method/Property | Description |
+|-----------------|-------------|
+| `get(key, default=None)` | Return a deep copy of the value, or `default`. |
+| `require(key)` | Like `get()` but raises `ScratchpadKeyError` if absent. |
+| `has(key)` | `True` if key exists. |
+| `keys()` | Sorted list of all keys. |
+| `values()` | Deep copies in key-sorted order. |
+| `items()` | `(key, value)` tuples in key-sorted order. |
+| `snapshot()` | Deep copy of the entire scratchpad as a dict. |
+| `count` | Number of entries. |
+| `is_empty` | `True` when empty. |
+
+### Exceptions
+
+| Exception | When |
+|-----------|------|
+| `ScratchpadKeyError` | `require()` called for a missing key. |
 
 ## License
 

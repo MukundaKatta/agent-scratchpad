@@ -1,27 +1,39 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "agent-scratchpad"
 version = "0.1.0"
-description = "Keyed working memory for LLM agents — set/append/increment with optional JSONL logging."
+description = "Keyed in-memory notepad for LLM agent runs"
 readme = "README.md"
-license = { text = "MIT" }
-requires-python = ">=3.10"
-keywords = ["llm", "agents", "memory", "scratchpad", "anthropic"]
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["agent", "llm", "scratchpad", "memory", "notepad", "state"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
 
-[tool.setuptools.package-data]
-agent_scratchpad = ["py.typed"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_scratchpad"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
