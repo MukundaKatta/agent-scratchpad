@@ -1,297 +1,260 @@
-"""Tests for agent_scratchpad.Scratchpad."""
+"""Tests for agent-scratchpad."""
 
-from __future__ import annotations
+import sys
+import os
+import json
+import tempfile
+from pathlib import Path
 
-import threading
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
 import pytest
-
-from agent_scratchpad import Scratchpad
-
-# ---------------------------------------------------------------------------
-# Basic set / get
-# ---------------------------------------------------------------------------
+from agent_scratchpad import Scratchpad, ScratchpadError
 
 
-def test_set_get_basic():
+def test_empty():
     pad = Scratchpad()
-    pad.set("key", "value")
-    assert pad.get("key") == "value"
-
-
-def test_get_missing_returns_default():
-    pad = Scratchpad()
-    assert pad.get("nope") is None
-
-
-def test_get_missing_custom_default():
-    pad = Scratchpad()
-    assert pad.get("nope", 42) == 42
-
-
-def test_set_overwrites():
-    pad = Scratchpad()
-    pad.set("k", 1)
-    pad.set("k", 2)
-    assert pad.get("k") == 2
-
-
-# ---------------------------------------------------------------------------
-# delete
-# ---------------------------------------------------------------------------
-
-
-def test_delete_existing_returns_true():
-    pad = Scratchpad()
-    pad.set("x", 10)
-    assert pad.delete("x") is True
-
-
-def test_delete_existing_key_gone():
-    pad = Scratchpad()
-    pad.set("x", 10)
-    pad.delete("x")
-    assert pad.get("x") is None
-
-
-def test_delete_missing_returns_false():
-    pad = Scratchpad()
-    assert pad.delete("ghost") is False
-
-
-# ---------------------------------------------------------------------------
-# has
-# ---------------------------------------------------------------------------
-
-
-def test_has_true():
-    pad = Scratchpad()
-    pad.set("present", 1)
-    assert pad.has("present") is True
-
-
-def test_has_false():
-    pad = Scratchpad()
-    assert pad.has("absent") is False
-
-
-# ---------------------------------------------------------------------------
-# keys / items
-# ---------------------------------------------------------------------------
-
-
-def test_keys_returns_list():
-    pad = Scratchpad()
-    pad.set("a", 1)
-    pad.set("b", 2)
-    assert sorted(pad.keys()) == ["a", "b"]
-
-
-def test_keys_is_copy():
-    pad = Scratchpad()
-    pad.set("a", 1)
-    k = pad.keys()
-    k.append("mutated")
-    assert "mutated" not in pad.keys()  # noqa: SIM118 — testing .keys() copy semantics
-
-
-def test_items_returns_dict():
-    pad = Scratchpad()
-    pad.set("x", 99)
-    assert pad.items() == {"x": 99}
-
-
-def test_items_is_copy():
-    pad = Scratchpad()
-    pad.set("x", 99)
-    d = pad.items()
-    d["extra"] = "oops"
-    assert "extra" not in pad.items()
-
-
-# ---------------------------------------------------------------------------
-# clear
-# ---------------------------------------------------------------------------
-
-
-def test_clear_removes_all():
-    pad = Scratchpad()
-    pad.set("a", 1)
-    pad.set("b", 2)
-    pad.clear()
+    assert len(pad) == 0
     assert pad.keys() == []
 
-
-# ---------------------------------------------------------------------------
-# size
-# ---------------------------------------------------------------------------
-
-
-def test_size_property():
+def test_set_get():
     pad = Scratchpad()
-    assert pad.size == 0
+    pad.set("topic", "quantum")
+    assert pad.get("topic") == "quantum"
+
+def test_set_replaces():
+    pad = Scratchpad()
+    pad.set("x", 1)
+    pad.set("x", 2)
+    assert pad.get("x") == 2
+
+def test_get_default():
+    pad = Scratchpad()
+    assert pad.get("missing") is None
+    assert pad.get("missing", "fallback") == "fallback"
+
+def test_get_deep_copy():
+    pad = Scratchpad()
+    pad.set("data", {"a": 1})
+    result = pad.get("data")
+    result["a"] = 99
+    assert pad.get("data") == {"a": 1}
+
+def test_has():
+    pad = Scratchpad()
+    pad.set("x", 1)
+    assert pad.has("x") is True
+    assert pad.has("y") is False
+
+def test_contains():
+    pad = Scratchpad()
     pad.set("k", "v")
-    assert pad.size == 1
-    pad.delete("k")
-    assert pad.size == 0
+    assert "k" in pad
+    assert "z" not in pad
 
-
-# ---------------------------------------------------------------------------
-# append
-# ---------------------------------------------------------------------------
-
-
-def test_append_creates_list_on_missing_key():
+def test_set_returns_self():
     pad = Scratchpad()
-    pad.append("items", "first")
-    assert pad.get("items") == ["first"]
+    assert pad.set("k", "v") is pad
 
-
-def test_append_to_existing_list():
+def test_delete():
     pad = Scratchpad()
-    pad.set("items", [1, 2])
-    pad.append("items", 3)
-    assert pad.get("items") == [1, 2, 3]
+    pad.set("x", 1)
+    pad.delete("x")
+    assert pad.has("x") is False
 
+def test_delete_missing_no_error():
+    pad = Scratchpad()
+    pad.delete("nonexistent")
+
+def test_append_creates_list():
+    pad = Scratchpad()
+    pad.append("items", "a")
+    assert pad.get("items") == ["a"]
+
+def test_append_grows_list():
+    pad = Scratchpad()
+    pad.append("items", "a")
+    pad.append("items", "b")
+    assert pad.get("items") == ["a", "b"]
 
 def test_append_to_non_list_raises():
     pad = Scratchpad()
-    pad.set("items", "not a list")
-    with pytest.raises(TypeError):
-        pad.append("items", "value")
+    pad.set("key", "string_value")
+    with pytest.raises(ScratchpadError):
+        pad.append("key", "x")
 
-
-# ---------------------------------------------------------------------------
-# search
-# ---------------------------------------------------------------------------
-
-
-def test_search_case_insensitive_key():
+def test_prepend():
     pad = Scratchpad()
-    pad.set("FooBar", 1)
-    result = pad.search("foobar")
-    assert "FooBar" in result
+    pad.append("items", "b")
+    pad.prepend("items", "a")
+    assert pad.get("items") == ["a", "b"]
 
-
-def test_search_case_insensitive_value():
+def test_prepend_creates_list():
     pad = Scratchpad()
-    pad.set("note", "Hello World")
-    result = pad.search("hello")
-    assert "note" in result
+    pad.prepend("items", "x")
+    assert pad.get("items") == ["x"]
 
-
-def test_search_no_match_empty_dict():
+def test_extend_list():
     pad = Scratchpad()
-    pad.set("alpha", "beta")
-    assert pad.search("xyz") == {}
+    pad.extend_list("nums", [1, 2, 3])
+    assert pad.get("nums") == [1, 2, 3]
 
-
-# ---------------------------------------------------------------------------
-# snapshot
-# ---------------------------------------------------------------------------
-
-
-def test_snapshot_is_copy():
+def test_extend_list_grows():
     pad = Scratchpad()
-    pad.set("a", 1)
-    snap = pad.snapshot()
-    snap["b"] = 2
-    assert "b" not in pad.items()
+    pad.extend_list("nums", [1, 2])
+    pad.extend_list("nums", [3, 4])
+    assert pad.get("nums") == [1, 2, 3, 4]
 
-
-def test_snapshot_reflects_state():
+def test_extend_non_list_raises():
     pad = Scratchpad()
-    pad.set("x", 42)
-    assert pad.snapshot() == {"x": 42}
+    pad.set("k", "string")
+    with pytest.raises(ScratchpadError):
+        pad.extend_list("k", [1])
 
-
-# ---------------------------------------------------------------------------
-# Thread safety
-# ---------------------------------------------------------------------------
-
-
-def test_thread_safety_no_data_loss():
+def test_increment_default():
     pad = Scratchpad()
-    n_threads = 10
-    keys_per_thread = 100
+    pad.increment("count")
+    assert pad.get("count") == 1
 
-    def writer(thread_id: int):
-        for i in range(keys_per_thread):
-            pad.set(f"t{thread_id}_k{i}", i)
+def test_increment_by():
+    pad = Scratchpad()
+    pad.increment("count", 5)
+    assert pad.get("count") == 5
 
-    threads = [threading.Thread(target=writer, args=(t,)) for t in range(n_threads)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+def test_increment_multiple():
+    pad = Scratchpad()
+    pad.increment("count")
+    pad.increment("count")
+    pad.increment("count")
+    assert pad.get("count") == 3
 
-    assert pad.size == n_threads * keys_per_thread
+def test_decrement():
+    pad = Scratchpad()
+    pad.set("count", 10)
+    pad.decrement("count", 3)
+    assert pad.get("count") == 7
 
+def test_increment_non_numeric_raises():
+    pad = Scratchpad()
+    pad.set("x", "string")
+    with pytest.raises(ScratchpadError):
+        pad.increment("x")
 
-# ---------------------------------------------------------------------------
-# JSONL persistence
-# ---------------------------------------------------------------------------
+def test_update():
+    pad = Scratchpad()
+    pad.update({"a": 1, "b": 2, "c": 3})
+    assert pad.get("a") == 1
+    assert pad.get("b") == 2
+    assert pad.get("c") == 3
 
-
-def test_persist_set_get_roundtrip(tmp_path):
-    path = str(tmp_path / "pad.jsonl")
-    pad = Scratchpad(persist_path=path)
-    pad.set("result", {"score": 0.9})
-    pad2 = Scratchpad(persist_path=path)
-    assert pad2.get("result") == {"score": 0.9}
-
-
-def test_persist_reload_recovers_state(tmp_path):
-    path = str(tmp_path / "pad.jsonl")
-    pad = Scratchpad(persist_path=path)
-    pad.set("step1", "done")
-    pad.set("step2", 42)
-    pad2 = Scratchpad(persist_path=path)
-    assert pad2.get("step1") == "done"
-    assert pad2.get("step2") == 42
-
-
-def test_persist_clear_writes_marker(tmp_path):
-    path = str(tmp_path / "pad.jsonl")
-    pad = Scratchpad(persist_path=path)
-    pad.set("a", 1)
+def test_clear():
+    pad = Scratchpad()
+    pad.set("x", 1).set("y", 2)
     pad.clear()
-    pad2 = Scratchpad(persist_path=path)
-    assert pad2.size == 0
+    assert len(pad) == 0
 
+def test_clear_returns_self():
+    pad = Scratchpad()
+    assert pad.clear() is pad
 
-def test_persist_deleted_key_not_present_after_reload(tmp_path):
-    path = str(tmp_path / "pad.jsonl")
-    pad = Scratchpad(persist_path=path)
-    pad.set("gone", "bye")
-    pad.delete("gone")
-    pad2 = Scratchpad(persist_path=path)
-    assert not pad2.has("gone")
+def test_keys_sorted():
+    pad = Scratchpad()
+    pad.set("z", 1).set("a", 2).set("m", 3)
+    assert pad.keys() == ["a", "m", "z"]
 
+def test_len():
+    pad = Scratchpad()
+    pad.set("a", 1).set("b", 2)
+    assert len(pad) == 2
 
-def test_persist_tilde_expansion(tmp_path, monkeypatch):
-    # Redirect ~ to tmp_path so we don't pollute home dir
-    monkeypatch.setenv("HOME", str(tmp_path))
-    path = "~/agent_test.jsonl"
-    pad = Scratchpad(persist_path=path)
-    pad.set("k", "v")
-    pad2 = Scratchpad(persist_path=path)
-    assert pad2.get("k") == "v"
+def test_snapshot():
+    pad = Scratchpad()
+    pad.set("x", 1)
+    snap = pad.snapshot()
+    snap["x"] = 99
+    assert pad.get("x") == 1
 
+def test_to_text_empty():
+    assert Scratchpad().to_text() == ""
 
-def test_persist_none_no_file_created(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    pad = Scratchpad(persist_path=None)
-    pad.set("k", "v")
-    assert list(tmp_path.iterdir()) == []
+def test_to_text_scalar():
+    pad = Scratchpad()
+    pad.set("topic", "ML")
+    text = pad.to_text()
+    assert "topic: ML" in text
 
+def test_to_text_list():
+    pad = Scratchpad()
+    pad.append("papers", "Turing 1950")
+    pad.append("papers", "Shannon 1948")
+    text = pad.to_text()
+    assert "papers:" in text
+    assert "- Turing 1950" in text
+    assert "- Shannon 1948" in text
 
-def test_persist_delete_roundtrip(tmp_path):
-    path = str(tmp_path / "pad.jsonl")
-    pad = Scratchpad(persist_path=path)
-    pad.set("keep", 1)
-    pad.set("drop", 2)
-    pad.delete("drop")
-    pad2 = Scratchpad(persist_path=path)
-    assert pad2.has("keep")
-    assert not pad2.has("drop")
+def test_to_text_with_title():
+    pad = Scratchpad()
+    pad.set("x", 1)
+    text = pad.to_text(title="Notes")
+    assert text.startswith("Notes:")
+
+def test_to_json():
+    pad = Scratchpad()
+    pad.set("x", 1)
+    data = json.loads(pad.to_json())
+    assert data["x"] == 1
+
+def test_from_json():
+    pad = Scratchpad.from_json('{"k": "v", "n": 42}')
+    assert pad.get("k") == "v"
+    assert pad.get("n") == 42
+
+def test_save_load():
+    pad = Scratchpad()
+    pad.set("a", 1).append("items", "x")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        pad.save(path)
+        loaded = Scratchpad.load(path)
+        assert loaded.get("a") == 1
+        assert loaded.get("items") == ["x"]
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+def test_jsonl_logging():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        path = f.name
+    try:
+        pad = Scratchpad(path)
+        pad.set("k", "v")
+        pad.append("list", "item")
+        pad.increment("count")
+        lines = Path(path).read_text().strip().splitlines()
+        assert len(lines) == 3
+        ops = [json.loads(l)["op"] for l in lines]
+        assert ops == ["set", "append", "increment"]
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+def test_no_logging_without_path():
+    pad = Scratchpad()
+    pad.set("x", 1)  # no exception
+
+def test_repr():
+    pad = Scratchpad()
+    pad.set("x", 1)
+    assert "Scratchpad" in repr(pad)
+    assert "x" in repr(pad)
+
+def test_chaining():
+    pad = (
+        Scratchpad()
+        .set("a", 1)
+        .set("b", 2)
+        .increment("c")
+        .append("items", "x")
+    )
+    assert pad.get("a") == 1
+    assert pad.get("c") == 1
+    assert pad.get("items") == ["x"]

@@ -1,81 +1,73 @@
-# token-budget-py
+# agent-scratchpad
 
-[![PyPI](https://img.shields.io/pypi/v/token-budget-py.svg)](https://pypi.org/project/token-budget-py/)
-[![Python](https://img.shields.io/pypi/pyversions/token-budget-py.svg)](https://pypi.org/project/token-budget-py/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+Keyed working memory for LLM agents — set, append, increment, with optional JSONL logging.
 
-**Thread-safe shared token + USD budget for concurrent LLM tasks.**
-
-Fan-out workloads — agents, parallel summarizers, batch evals — race many
-tasks to consume from one shared budget. This library is a small,
-zero-dependency counter with two axes (tokens, USD) that returns
-`BudgetExceeded` when a record would push past a configured cap.
-
-Sibling to the Rust crate
-[`token-budget-pool`](https://crates.io/crates/token-budget-pool).
+Zero dependencies. Python 3.10+. MIT.
 
 ## Install
 
 ```bash
-pip install token-budget-py
+pip install agent-scratchpad
 ```
 
-## Use
+## Usage
 
 ```python
-from token_budget import BudgetPool, BudgetExceeded
+from agent_scratchpad import Scratchpad
 
-pool = BudgetPool(token_cap=1_000_000, usd_cap=10.0)
+pad = Scratchpad()
+pad.set("topic", "quantum computing")
+pad.append("papers", "Shor 1994")
+pad.append("papers", "Grover 1996")
+pad.increment("search_count")
 
-try:
-    pool.record(tokens=1200, usd=0.0036)
-except BudgetExceeded as e:
-    # tell this worker to skip
-    print(f"out of budget: {e}")
+print(pad.to_text())
+# topic: quantum computing
+# papers:
+#   - Shor 1994
+#   - Grover 1996
+# search_count: 1
 ```
 
-Two-phase commit (reserve before the LLM call, commit the actual usage):
+## Inject into system prompt
 
 ```python
-with pool.reserve(tokens=2000, usd=0.012) as r:
-    result = call_llm(prompt)
-    r.commit(tokens=result.usage.total_tokens, usd=result.cost_usd)
+context = pad.to_text(title="Agent working memory")
+messages = [
+    {"role": "system", "content": f"You are helpful.\n\n{context}"},
+    ...
+]
 ```
 
-If the `with` block exits without `r.commit()` (e.g. the LLM call raised),
-the reservation is auto-released — no orphaned slots.
-
-Either axis is optional:
+## Persistence
 
 ```python
-only_tokens = BudgetPool(token_cap=500_000)        # USD unbounded
-only_usd    = BudgetPool(usd_cap=5.0)              # tokens unbounded
-unbounded   = BudgetPool()                         # both unbounded (counter only)
+# JSONL log — every operation appended
+pad = Scratchpad("logs/scratchpad.jsonl")
+pad.set("key", "value")  # appended to log
+
+# Save/load full snapshot
+pad.save("state.json")
+pad2 = Scratchpad.load("state.json")
 ```
 
-Atomic read of current state:
+## All operations
 
 ```python
-snap = pool.snapshot()
-snap.tokens_used         # 1200
-snap.usd_remaining       # 9.9964
-snap.tokens_remaining    # 998800 (cap - used - reserved)
+pad.set("key", value)          # set scalar
+pad.get("key", default=None)   # get (deep copy)
+pad.delete("key")              # remove
+pad.has("key")                 # bool
+pad.append("list_key", item)   # append to list
+pad.prepend("list_key", item)  # prepend to list
+pad.extend_list("list", items) # extend list
+pad.increment("counter", by=1) # add to number
+pad.decrement("counter", by=1) # subtract
+pad.update({"a": 1, "b": 2})  # set multiple
+pad.clear()                    # remove all
+pad.keys()                     # sorted key list
+pad.snapshot()                 # deep copy of data
 ```
-
-## What it does NOT do
-
-- No async runtime lock-in. Works under `asyncio`, `trio`, threads, sync.
-  The internal lock is a plain `threading.Lock` (held only for the
-  microseconds of a counter update).
-- No HTTP. Doesn't talk to any LLM provider.
-- No cost calculation. Wrap a cost calculator that returns USD per call
-  and feed the result into `record`. (See `claude-cost`, `openai-cost`,
-  `gemini-cost`, `bedrock-cost` on crates.io for Rust cost calculators
-  with the same authorship.)
-- No persistence. Counts live in process. For multi-process / multi-host
-  budgets, wrap a Redis or DB increment instead.
-- No automatic rollover. Call `pool.reset()` from your own cron / time
-  loop if you want a periodic window.
 
 ## License
 
