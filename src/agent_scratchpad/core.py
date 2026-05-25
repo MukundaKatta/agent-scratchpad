@@ -1,188 +1,342 @@
-"""Keyed in-memory notepad for LLM agent runs.
+"""
+agent_scratchpad — keyed in-memory notepad for agent loops.
 
-A lightweight, serialisable key-value store that an agent can use to
-accumulate named pieces of information across turns.
-
-Example::
-
-    from agent_scratchpad import AgentScratchpad
-
-    pad = AgentScratchpad()
-    pad.set("user_goal", "Write a poem about the sea")
-    pad.set("draft", "Waves crash against the shore...")
-
-    print(pad.get("user_goal"))
-    print(pad.snapshot())    # {"user_goal": "...", "draft": "..."}
-    pad.delete("draft")
-    pad.clear()
+Store intermediate findings, inject them into prompts, search by key,
+expire old notes. Zero dependencies (stdlib: time, fnmatch, dataclasses).
 """
 
 from __future__ import annotations
 
-import copy
+import fnmatch
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 
-class ScratchpadKeyError(KeyError):
-    """Raised when :meth:`AgentScratchpad.require` is called for a missing key."""
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScratchpadEntry:
+    """A single scratchpad note."""
+
+    key: str
+    value: str
+    category: str | None = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    expires_at: float | None = None
+
+    @property
+    def expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        return time.time() >= self.expires_at
+
+    @property
+    def ttl_remaining(self) -> float | None:
+        if self.expires_at is None:
+            return None
+        remaining = self.expires_at - time.time()
+        return max(0.0, remaining)
 
 
-class AgentScratchpad:
-    """A keyed in-memory notepad for a single agent run.
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
 
-    All values are stored and returned as deep copies so callers cannot
-    accidentally share mutable state with the scratchpad's internals.
+class KeyNotFound(KeyError):
+    """Raised when a key does not exist in the scratchpad."""
+
+
+class KeyAlreadyExists(KeyError):
+    """Raised when trying to create a key that already exists."""
+
+
+# ---------------------------------------------------------------------------
+# Scratchpad
+# ---------------------------------------------------------------------------
+
+class Scratchpad:
+    """
+    Keyed in-memory notepad for agent loops.
+
+    Usage::
+
+        pad = Scratchpad()
+        pad.write("search_result", "10 papers found about quantum computing")
+        pad.write("summary", "Key themes: error correction, qubits", category="findings")
+
+        # Inject into a prompt
+        context = pad.to_context()
+        messages.append({"role": "user", "content": f"{context}\\n\\nNow synthesize."})
     """
 
     def __init__(self) -> None:
-        self._store: dict[str, Any] = {}
+        self._entries: dict[str, ScratchpadEntry] = {}
 
     # ------------------------------------------------------------------
-    # Writes
+    # Write / update / delete
     # ------------------------------------------------------------------
 
-    def set(self, key: str, value: Any) -> AgentScratchpad:
-        """Store *value* under *key* (deep copy).
+    def write(
+        self,
+        key: str,
+        value: str,
+        *,
+        category: str | None = None,
+        ttl_seconds: float | None = None,
+        overwrite: bool = True,
+    ) -> ScratchpadEntry:
+        """
+        Write a value to the scratchpad.
 
         Args:
-            key:   String key.
-            value: Any picklable/copyable value.
+            key: Unique identifier for this note.
+            value: Text content.
+            category: Optional grouping tag.
+            ttl_seconds: If set, the entry expires after this many seconds.
+            overwrite: If False and key exists (and not expired), raises
+                       :class:`KeyAlreadyExists`.
 
         Returns:
-            ``self`` for chaining.
+            The :class:`ScratchpadEntry`.
         """
-        self._store[key] = copy.deepcopy(value)
-        return self
+        existing = self._entries.get(key)
+        if existing and not existing.expired and not overwrite:
+            raise KeyAlreadyExists(f"Key {key!r} already exists")
 
-    def update(self, data: dict[str, Any]) -> AgentScratchpad:
-        """Merge *data* into the scratchpad (deep copy of each value).
+        expires_at: float | None = None
+        if ttl_seconds is not None:
+            expires_at = time.time() + ttl_seconds
+
+        entry = ScratchpadEntry(
+            key=key,
+            value=value,
+            category=category,
+            expires_at=expires_at,
+        )
+        self._entries[key] = entry
+        return entry
+
+    def update(self, key: str, value: str, *, ttl_seconds: float | None = None) -> ScratchpadEntry:
+        """
+        Update an existing entry.
 
         Args:
-            data: Mapping of key/value pairs to set.
+            key: Must already exist (and not be expired).
+            value: New text value.
+            ttl_seconds: Reset TTL if provided.
 
         Returns:
-            ``self`` for chaining.
-        """
-        for k, v in data.items():
-            self._store[k] = copy.deepcopy(v)
-        return self
-
-    def delete(self, key: str) -> AgentScratchpad:
-        """Remove *key* from the scratchpad.
-
-        No-op if *key* does not exist.
-
-        Args:
-            key: Key to remove.
-
-        Returns:
-            ``self`` for chaining.
-        """
-        self._store.pop(key, None)
-        return self
-
-    def clear(self) -> AgentScratchpad:
-        """Remove all entries.
-
-        Returns:
-            ``self`` for chaining.
-        """
-        self._store.clear()
-        return self
-
-    # ------------------------------------------------------------------
-    # Reads
-    # ------------------------------------------------------------------
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return a deep copy of the value stored under *key*.
-
-        Args:
-            key:     Key to look up.
-            default: Value to return when *key* is absent.
-
-        Returns:
-            Deep copy of the stored value, or *default*.
-        """
-        if key not in self._store:
-            return default
-        return copy.deepcopy(self._store[key])
-
-    def require(self, key: str) -> Any:
-        """Return the value under *key* or raise if absent.
-
-        Args:
-            key: Key to look up.
-
-        Returns:
-            Deep copy of the stored value.
+            Updated :class:`ScratchpadEntry`.
 
         Raises:
-            ScratchpadKeyError: If *key* is not in the scratchpad.
+            :class:`KeyNotFound` if key doesn't exist or is expired.
         """
-        if key not in self._store:
-            raise ScratchpadKeyError(key)
-        return copy.deepcopy(self._store[key])
+        entry = self._get_live(key)
+        entry.value = value
+        entry.updated_at = time.time()
+        if ttl_seconds is not None:
+            entry.expires_at = time.time() + ttl_seconds
+        return entry
 
-    def has(self, key: str) -> bool:
-        """Return ``True`` if *key* is present in the scratchpad."""
-        return key in self._store
-
-    # ------------------------------------------------------------------
-    # Bulk views
-    # ------------------------------------------------------------------
-
-    def keys(self) -> list[str]:
-        """Return a sorted list of all keys."""
-        return sorted(self._store.keys())
-
-    def values(self) -> list[Any]:
-        """Return deep copies of all values, in key-sorted order."""
-        return [copy.deepcopy(self._store[k]) for k in sorted(self._store)]
-
-    def items(self) -> list[tuple[str, Any]]:
-        """Return ``(key, value)`` tuples in key-sorted order (deep copies)."""
-        return [(k, copy.deepcopy(self._store[k])) for k in sorted(self._store)]
-
-    def snapshot(self) -> dict[str, Any]:
-        """Return a deep copy of the entire scratchpad as a plain dict."""
-        return copy.deepcopy(self._store)
-
-    def restore(self, data: dict[str, Any]) -> AgentScratchpad:
-        """Replace the entire scratchpad with *data* (deep copy).
+    def append(self, key: str, text: str, *, separator: str = "\n") -> ScratchpadEntry:
+        """
+        Append *text* to an existing entry (or create it if missing).
 
         Args:
-            data: New scratchpad state.
+            key: Entry key.
+            text: Text to append.
+            separator: Separator between old and new text.
 
         Returns:
-            ``self`` for chaining.
+            Updated :class:`ScratchpadEntry`.
         """
-        self._store = copy.deepcopy(data)
-        return self
+        entry = self._entries.get(key)
+        if entry is None or entry.expired:
+            return self.write(key, text)
+        entry.value = entry.value + separator + text
+        entry.updated_at = time.time()
+        return entry
+
+    def delete(self, key: str) -> None:
+        """
+        Delete an entry by key.
+
+        Args:
+            key: Entry key.
+
+        Raises:
+            :class:`KeyNotFound` if key doesn't exist.
+        """
+        if key not in self._entries:
+            raise KeyNotFound(key)
+        del self._entries[key]
+
+    def clear(self, category: str | None = None) -> int:
+        """
+        Delete all entries (or all entries in a category).
+
+        Args:
+            category: If given, only delete entries in this category.
+
+        Returns:
+            Number of entries deleted.
+        """
+        if category is None:
+            count = len(self._entries)
+            self._entries.clear()
+            return count
+        to_delete = [k for k, e in self._entries.items() if e.category == category]
+        for k in to_delete:
+            del self._entries[k]
+        return len(to_delete)
+
+    def purge_expired(self) -> int:
+        """
+        Remove all expired entries.
+
+        Returns:
+            Number of entries removed.
+        """
+        to_delete = [k for k, e in self._entries.items() if e.expired]
+        for k in to_delete:
+            del self._entries[k]
+        return len(to_delete)
 
     # ------------------------------------------------------------------
-    # Properties
+    # Read
     # ------------------------------------------------------------------
 
-    @property
-    def count(self) -> int:
-        """Number of entries currently in the scratchpad."""
-        return len(self._store)
+    def read(self, key: str, default: str | None = None) -> str | None:
+        """
+        Read a value by key.
 
-    @property
-    def is_empty(self) -> bool:
-        """``True`` if the scratchpad has no entries."""
-        return len(self._store) == 0
+        Args:
+            key: Entry key.
+            default: Value to return if key is missing or expired.
+
+        Returns:
+            Value string, or *default*.
+        """
+        entry = self._entries.get(key)
+        if entry is None or entry.expired:
+            return default
+        return entry.value
+
+    def get_entry(self, key: str) -> ScratchpadEntry | None:
+        """
+        Return the full :class:`ScratchpadEntry`, or None if missing/expired.
+        """
+        entry = self._entries.get(key)
+        if entry is None or entry.expired:
+            return None
+        return entry
+
+    def require(self, key: str) -> str:
+        """
+        Return a value, raising :class:`KeyNotFound` if missing or expired.
+        """
+        entry = self._entries.get(key)
+        if entry is None or entry.expired:
+            raise KeyNotFound(key)
+        return entry.value
 
     # ------------------------------------------------------------------
-    # Dunder
+    # Querying
     # ------------------------------------------------------------------
+
+    def keys(self, category: str | None = None) -> list[str]:
+        """
+        Return all live (non-expired) keys.
+
+        Args:
+            category: If given, filter to this category only.
+
+        Returns:
+            List of keys.
+        """
+        return [
+            k for k, e in self._entries.items()
+            if not e.expired and (category is None or e.category == category)
+        ]
+
+    def search(self, pattern: str, *, category: str | None = None) -> dict[str, str]:
+        """
+        Return entries whose key matches a glob *pattern*.
+
+        Args:
+            pattern: Glob pattern (e.g. ``"result_*"``).
+            category: Optionally restrict to a category.
+
+        Returns:
+            ``{key: value}`` dict for matching live entries.
+        """
+        return {
+            k: e.value
+            for k, e in self._entries.items()
+            if not e.expired
+            and fnmatch.fnmatch(k, pattern)
+            and (category is None or e.category == category)
+        }
+
+    def categories(self) -> list[str]:
+        """Return distinct category names (live entries only)."""
+        cats = {e.category for e in self._entries.values() if not e.expired and e.category}
+        return sorted(cats)  # type: ignore[arg-type]
+
+    # ------------------------------------------------------------------
+    # Prompt injection
+    # ------------------------------------------------------------------
+
+    def to_context(
+        self,
+        *,
+        category: str | None = None,
+        header: str = "## Scratchpad Notes",
+        entry_format: str = "**{key}**: {value}",
+        separator: str = "\n\n",
+    ) -> str:
+        """
+        Render all live entries as a formatted string for prompt injection.
+
+        Args:
+            category: Filter to a category.
+            header: Section header (empty string to omit).
+            entry_format: Python format string with ``{key}`` and ``{value}``.
+            separator: Separator between entries.
+
+        Returns:
+            Formatted string.
+        """
+        live = [
+            e for e in self._entries.values()
+            if not e.expired and (category is None or e.category == category)
+        ]
+        if not live:
+            return ""
+        parts = []
+        if header:
+            parts.append(header)
+        for e in live:
+            parts.append(entry_format.format(key=e.key, value=e.value))
+        return separator.join(parts)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def __contains__(self, key: str) -> bool:
+        entry = self._entries.get(key)
+        return entry is not None and not entry.expired
 
     def __len__(self) -> int:
-        return len(self._store)
+        return sum(1 for e in self._entries.values() if not e.expired)
 
-    def __contains__(self, key: object) -> bool:
-        return key in self._store
-
-    def __repr__(self) -> str:
-        return f"AgentScratchpad(count={self.count})"
+    def _get_live(self, key: str) -> ScratchpadEntry:
+        entry = self._entries.get(key)
+        if entry is None or entry.expired:
+            raise KeyNotFound(key)
+        return entry

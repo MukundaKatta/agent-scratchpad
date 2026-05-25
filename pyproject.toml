@@ -1,39 +1,23 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-scratchpad"
 version = "0.1.0"
-description = "Keyed in-memory notepad for LLM agent runs"
+description = "Keyed in-memory notepad for agent loops — write, read, search, TTL expiry, prompt injection. Zero dependencies."
 readme = "README.md"
-license = { file = "LICENSE" }
-requires-python = ">=3.9"
-dependencies = []
-keywords = ["agent", "llm", "scratchpad", "memory", "notepad", "state"]
+license = {text = "MIT"}
+requires-python = ">=3.10"
+keywords = ["agents", "llm", "scratchpad", "notepad", "memory"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Libraries",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.4"]
+[project.urls]
+Homepage = "https://github.com/MukundaKatta/agent-scratchpad"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/agent_scratchpad"]
-
-[tool.ruff]
-line-length = 88
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[tool.setuptools.packages.find]
+where = ["src"]
