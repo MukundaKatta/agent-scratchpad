@@ -16,8 +16,18 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+[project.optional-dependencies]
+# No runtime or test dependencies are required: the library is pure stdlib and
+# the test suite uses unittest. This extra exists only as a convenience for
+# building/publishing the package.
+dev = ["build"]
+
 [project.urls]
 Homepage = "https://github.com/MukundaKatta/agent-scratchpad"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the PEP 561 typing marker so type checkers honour the inline hints.
+agent_scratchpad = ["py.typed"]
